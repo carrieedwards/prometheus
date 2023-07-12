@@ -496,27 +496,25 @@ func (s *memSeries) oooMergedChunk(meta chunks.Meta, cdm *chunks.ChunkDiskMapper
 	// those that overlap and stop when we know the rest don't.
 	slices.SortFunc(tmpChks, refLessByMinTimeAndMinRef)
 
-	mc := &mergedOOOChunks{}
+	mc := &mergedOOOChunks{encoding: chunkenc.EncXOR}
 	absoluteMax := int64(math.MinInt64)
 	for _, c := range tmpChks {
 		if c.meta.Ref != meta.Ref && (len(mc.chunks) == 0 || c.meta.MinTime > absoluteMax) {
 			continue
 		}
 		if c.meta.Ref == oooHeadRef {
-			var xor *chunkenc.XORChunk
-			// If head chunk min and max time match the meta OOO markers
-			// that means that the chunk has not expanded so we can append
-			// it as it is.
-			if s.ooo.oooHeadChunk.minTime == meta.OOOLastMinTime && s.ooo.oooHeadChunk.maxTime == meta.OOOLastMaxTime {
-				xor, err = s.ooo.oooHeadChunk.chunk.ToXOR() // TODO(jesus.vazquez) (This is an optimization idea that has no priority and might not be that useful) See if we could use a copy of the underlying slice. That would leave the more expensive ToXOR() function only for the usecase where Bytes() is called.
-			} else {
-				// We need to remove samples that are outside of the markers
-				xor, err = s.ooo.oooHeadChunk.chunk.ToXORBetweenTimestamps(meta.OOOLastMinTime, meta.OOOLastMaxTime)
-			}
+			chks, err := s.ooo.oooHeadChunk.chunk.ToEncodedChunks(meta.OOOLastMinTime, meta.OOOLastMaxTime)
 			if err != nil {
-				return nil, errors.Wrap(err, "failed to convert ooo head chunk to xor chunk")
+				return nil, errors.Wrap(err, "failed to convert ooo head chunk to encoded chunk(s)")
 			}
-			c.meta.Chunk = xor
+			// If the head results in multiple chunks, the chunks will share the same reference as the head chunk,
+			// which is technically true, but if some code does not check against the head, could lead to unexpected results.
+			for _, chk := range chks {
+				c.meta.Chunk = chk.chunk
+				c.meta.MinTime = chk.minTime
+				c.meta.MaxTime = chk.maxTime // Samples in the head are guaranteed to be ordered on time so this works out fine for absoluteMax.
+				mc.chunks = append(mc.chunks, c.meta)
+			}
 		} else {
 			chk, err := cdm.Chunk(c.ref)
 			if err != nil {
@@ -535,8 +533,9 @@ func (s *memSeries) oooMergedChunk(meta chunks.Meta, cdm *chunks.ChunkDiskMapper
 			} else {
 				c.meta.Chunk = chk
 			}
+			mc.encoding = c.meta.Chunk.Encoding() // Update the oooMergedChunk encoding depending on the chunk's encoding type
+			mc.chunks = append(mc.chunks, c.meta)
 		}
-		mc.chunks = append(mc.chunks, c.meta)
 		if c.meta.MaxTime > absoluteMax {
 			absoluteMax = c.meta.MaxTime
 		}
@@ -550,28 +549,20 @@ var _ chunkenc.Chunk = &mergedOOOChunks{}
 // mergedOOOChunks holds the list of overlapping chunks. This struct satisfies
 // chunkenc.Chunk.
 type mergedOOOChunks struct {
-	chunks []chunks.Meta
+	chunks   []chunks.Meta
+	encoding chunkenc.Encoding
 }
 
 // Bytes is a very expensive method because its calling the iterator of all the
 // chunks in the mergedOOOChunk and building a new chunk with the samples.
 func (o mergedOOOChunks) Bytes() []byte {
-	xc := chunkenc.NewXORChunk()
-	app, err := xc.Appender()
-	if err != nil {
-		panic(err)
-	}
 	it := o.Iterator(nil)
-	for it.Next() == chunkenc.ValFloat {
-		t, v := it.At()
-		app.Append(t, v)
-	}
-
-	return xc.Bytes()
+	return GetBytes(o.Encoding(), it)
 }
 
 func (o mergedOOOChunks) Encoding() chunkenc.Encoding {
-	return chunkenc.EncXOR
+	// TODO(carrieedwards) Handle cases where chunks have different encoding types due to samples being of different types
+	return o.encoding
 }
 
 func (o mergedOOOChunks) Appender() (chunkenc.Appender, error) {
@@ -604,14 +595,8 @@ type boundedChunk struct {
 }
 
 func (b boundedChunk) Bytes() []byte {
-	xor := chunkenc.NewXORChunk()
-	a, _ := xor.Appender()
 	it := b.Iterator(nil)
-	for it.Next() == chunkenc.ValFloat {
-		t, v := it.At()
-		a.Append(t, v)
-	}
-	return xor.Bytes()
+	return GetBytes(b.Encoding(), it)
 }
 
 func (b boundedChunk) Iterator(iterator chunkenc.Iterator) chunkenc.Iterator {
@@ -637,15 +622,15 @@ type boundedIterator struct {
 // If there are samples within bounds it will advance one by one amongst them.
 // If there are no samples within bounds it will return false.
 func (b boundedIterator) Next() chunkenc.ValueType {
-	for b.Iterator.Next() == chunkenc.ValFloat {
-		t, _ := b.Iterator.At()
+	for typ := b.Iterator.Next(); typ != chunkenc.ValNone; typ = b.Iterator.Next() {
+		t := b.Iterator.AtT()
 		switch {
 		case t < b.minT:
 			continue
 		case t > b.maxT:
 			return chunkenc.ValNone
 		default:
-			return chunkenc.ValFloat
+			return typ
 		}
 	}
 	return chunkenc.ValNone
@@ -654,13 +639,13 @@ func (b boundedIterator) Next() chunkenc.ValueType {
 func (b boundedIterator) Seek(t int64) chunkenc.ValueType {
 	if t < b.minT {
 		// We must seek at least up to b.minT if it is asked for something before that.
-		val := b.Iterator.Seek(b.minT)
-		if !(val == chunkenc.ValFloat) {
+		valType := b.Iterator.Seek(b.minT)
+		if valType == chunkenc.ValNone {
 			return chunkenc.ValNone
 		}
-		t, _ := b.Iterator.At()
+		t := b.Iterator.AtT()
 		if t <= b.maxT {
-			return chunkenc.ValFloat
+			return valType
 		}
 	}
 	if t > b.maxT {
@@ -784,4 +769,40 @@ func makeStopIterator(c chunkenc.Chunk, it chunkenc.Iterator, stopAfter int) chu
 		i:         -1,
 		stopAfter: stopAfter,
 	}
+}
+
+func GetBytes(encoding chunkenc.Encoding, it chunkenc.Iterator) []byte {
+	var xc chunkenc.Chunk
+
+	switch encoding {
+	case chunkenc.EncXOR:
+		xc = chunkenc.NewXORChunk()
+	case chunkenc.EncHistogram:
+		xc = chunkenc.NewHistogramChunk()
+	case chunkenc.EncFloatHistogram:
+		xc = chunkenc.NewFloatHistogramChunk()
+	}
+	app, err := xc.Appender()
+	if err != nil {
+		panic(err)
+	}
+
+	for typ := it.Next(); typ != chunkenc.ValNone; typ = it.Next() {
+		switch typ {
+		case chunkenc.ValFloat:
+			t, v := it.At()
+			app.Append(t, v)
+		case chunkenc.ValHistogram:
+			prevHApp, _ := app.(*chunkenc.HistogramAppender)
+			t, v := it.AtHistogram()
+			// TODO(carrieedwards): check if logic for new chunk allocation is needed (see ToEncodedChunks method)
+			app.AppendHistogram(prevHApp, t, v, false)
+		case chunkenc.ValFloatHistogram:
+			prevHApp, _ := app.(*chunkenc.FloatHistogramAppender)
+			t, v := it.AtFloatHistogram()
+			// TODO(carrieedwards): check if logic for new chunk allocation is needed (see ToEncodedChunks method)
+			app.AppendFloatHistogram(prevHApp, t, v, false)
+		}
+	}
+	return xc.Bytes()
 }

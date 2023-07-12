@@ -2508,6 +2508,14 @@ func TestIsolationWithoutAdd(t *testing.T) {
 }
 
 func TestOutOfOrderSamplesMetric(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOutOfOrderSamplesMetric(t, scenario)
+		})
+	}
+}
+
+func testOutOfOrderSamplesMetric(t *testing.T, scenario sampleTypeScenario) {
 	dir := t.TempDir()
 
 	db, err := Open(dir, nil, nil, DefaultOptions(), nil)
@@ -2516,34 +2524,40 @@ func TestOutOfOrderSamplesMetric(t *testing.T) {
 		require.NoError(t, db.Close())
 	}()
 	db.DisableCompactions()
+	db.EnableNativeHistograms()
+
+	appendSample := func(appender storage.Appender, ts int64) (storage.SeriesRef, error) {
+		ref, err, _ := scenario.appendFunc(appender, labels.FromStrings("a", "b"), ts, 99)
+		return ref, err
+	}
 
 	ctx := context.Background()
 	app := db.Appender(ctx)
 	for i := 1; i <= 5; i++ {
-		_, err = app.Append(0, labels.FromStrings("a", "b"), int64(i), 99)
+		_, err = appendSample(app, int64(i))
 		require.NoError(t, err)
 	}
 	require.NoError(t, app.Commit())
 
 	// Test out of order metric.
-	require.Equal(t, 0.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 0.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 	app = db.Appender(ctx)
-	_, err = app.Append(0, labels.FromStrings("a", "b"), 2, 99)
+	_, err = appendSample(app, 2)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 1.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 1.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 
-	_, err = app.Append(0, labels.FromStrings("a", "b"), 3, 99)
+	_, err = appendSample(app, 3)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 2.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 2.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 
-	_, err = app.Append(0, labels.FromStrings("a", "b"), 4, 99)
+	_, err = appendSample(app, 4)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 3.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 3.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 	require.NoError(t, app.Commit())
 
 	// Compact Head to test out of bound metric.
 	app = db.Appender(ctx)
-	_, err = app.Append(0, labels.FromStrings("a", "b"), DefaultBlockDuration*2, 99)
+	_, err = appendSample(app, DefaultBlockDuration*2)
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
 
@@ -2552,36 +2566,36 @@ func TestOutOfOrderSamplesMetric(t *testing.T) {
 	require.Greater(t, db.head.minValidTime.Load(), int64(0))
 
 	app = db.Appender(ctx)
-	_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()-2, 99)
+	_, err = appendSample(app, db.head.minValidTime.Load()-2)
 	require.Equal(t, storage.ErrOutOfBounds, err)
-	require.Equal(t, 1.0, prom_testutil.ToFloat64(db.head.metrics.outOfBoundSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 1.0, prom_testutil.ToFloat64(db.head.metrics.outOfBoundSamples.WithLabelValues(scenario.sampleType)))
 
-	_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()-1, 99)
+	_, err = appendSample(app, db.head.minValidTime.Load()-1)
 	require.Equal(t, storage.ErrOutOfBounds, err)
-	require.Equal(t, 2.0, prom_testutil.ToFloat64(db.head.metrics.outOfBoundSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 2.0, prom_testutil.ToFloat64(db.head.metrics.outOfBoundSamples.WithLabelValues(scenario.sampleType)))
 	require.NoError(t, app.Commit())
 
 	// Some more valid samples for out of order.
 	app = db.Appender(ctx)
 	for i := 1; i <= 5; i++ {
-		_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()+DefaultBlockDuration+int64(i), 99)
+		_, err = appendSample(app, db.head.minValidTime.Load()+DefaultBlockDuration+int64(i))
 		require.NoError(t, err)
 	}
 	require.NoError(t, app.Commit())
 
 	// Test out of order metric.
 	app = db.Appender(ctx)
-	_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()+DefaultBlockDuration+2, 99)
+	_, err = appendSample(app, db.head.minValidTime.Load()+DefaultBlockDuration+2)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 4.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 4.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 
-	_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()+DefaultBlockDuration+3, 99)
+	_, err = appendSample(app, db.head.minValidTime.Load()+DefaultBlockDuration+3)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 5.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 5.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 
-	_, err = app.Append(0, labels.FromStrings("a", "b"), db.head.minValidTime.Load()+DefaultBlockDuration+4, 99)
+	_, err = appendSample(app, db.head.minValidTime.Load()+DefaultBlockDuration+4)
 	require.Equal(t, storage.ErrOutOfOrderSample, err)
-	require.Equal(t, 6.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(sampleMetricTypeFloat)))
+	require.Equal(t, 6.0, prom_testutil.ToFloat64(db.head.metrics.outOfOrderSamples.WithLabelValues(scenario.sampleType)))
 	require.NoError(t, app.Commit())
 }
 
@@ -4449,6 +4463,14 @@ func TestChunkSnapshotTakenAfterIncompleteSnapshot(t *testing.T) {
 // TestOOOWalReplay checks the replay at a low level.
 // TODO(codesome): Needs test for ooo WAL repair.
 func TestOOOWalReplay(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOOOWalReplay(t, scenario)
+		})
+	}
+}
+
+func testOOOWalReplay(t *testing.T, scenario sampleTypeScenario) {
 	dir := t.TempDir()
 	wal, err := wlog.NewSize(nil, nil, filepath.Join(dir, "wal"), 32768, wlog.CompressionSnappy)
 	require.NoError(t, err)
@@ -4459,6 +4481,7 @@ func TestOOOWalReplay(t *testing.T) {
 	opts.ChunkRange = 1000
 	opts.ChunkDirRoot = dir
 	opts.OutOfOrderTimeWindow.Store(30 * time.Minute.Milliseconds())
+	opts.EnableNativeHistograms.Store(true)
 
 	h, err := NewHead(nil, nil, wal, oooWlog, opts, nil)
 	require.NoError(t, err)
@@ -4468,13 +4491,12 @@ func TestOOOWalReplay(t *testing.T) {
 	l := labels.FromStrings("foo", "bar")
 	appendSample := func(mins int64, isOOO bool) {
 		app := h.Appender(context.Background())
-		ts, v := mins*time.Minute.Milliseconds(), float64(mins)
-		_, err := app.Append(0, l, ts, v)
+		_, err, s := scenario.appendFunc(app, l, mins*time.Minute.Milliseconds(), mins)
 		require.NoError(t, err)
 		require.NoError(t, app.Commit())
 
 		if isOOO {
-			expOOOSamples = append(expOOOSamples, sample{t: ts, f: v})
+			expOOOSamples = append(expOOOSamples, s)
 		}
 	}
 
@@ -4511,20 +4533,49 @@ func TestOOOWalReplay(t *testing.T) {
 	require.False(t, ok)
 	require.NotNil(t, ms)
 
-	xor, err := ms.ooo.oooHeadChunk.chunk.ToXOR()
+	chks, err := ms.ooo.oooHeadChunk.chunk.ToEncodedChunks(math.MinInt64, math.MaxInt64)
 	require.NoError(t, err)
+	require.Len(t, chks, 1)
 
-	it := xor.Iterator(nil)
+	it := chks[0].chunk.Iterator(nil)
 	actOOOSamples := make([]sample, 0, len(expOOOSamples))
-	for it.Next() == chunkenc.ValFloat {
-		ts, v := it.At()
-		actOOOSamples = append(actOOOSamples, sample{t: ts, f: v})
+	for {
+		valType := it.Next()
+		if valType == chunkenc.ValNone {
+			break
+		}
+		switch valType {
+		case chunkenc.ValFloat:
+			ts, v := it.At()
+			actOOOSamples = append(actOOOSamples, sample{t: ts, f: v})
+		case chunkenc.ValHistogram:
+			ts, v := it.AtHistogram()
+			actOOOSamples = append(actOOOSamples, sample{t: ts, h: v})
+		case chunkenc.ValFloatHistogram:
+			ts, v := it.AtFloatHistogram()
+			actOOOSamples = append(actOOOSamples, sample{t: ts, fh: v})
+		default:
+			t.Error("Unexpected sample type")
+		}
 	}
 
 	// OOO chunk will be sorted. Hence sort the expected samples.
 	sort.Slice(expOOOSamples, func(i, j int) bool {
 		return expOOOSamples[i].t < expOOOSamples[j].t
 	})
+
+	// Sets the counter reset hint to the values currently returned (first sample has counter reset unknown, others have not counter reset)
+	// TODO(fionaliao): understand counter reset behaviour, might want to modify this later
+	for i := range expOOOSamples {
+		if i != 0 {
+			if expOOOSamples[i].h != nil {
+				expOOOSamples[i].h.CounterResetHint = histogram.NotCounterReset
+			}
+			if expOOOSamples[i].fh != nil {
+				expOOOSamples[i].fh.CounterResetHint = histogram.NotCounterReset
+			}
+		}
+	}
 
 	require.Equal(t, expOOOSamples, actOOOSamples)
 
@@ -4533,6 +4584,14 @@ func TestOOOWalReplay(t *testing.T) {
 
 // TestOOOMmapReplay checks the replay at a low level.
 func TestOOOMmapReplay(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOOOMmapReplay(t, scenario)
+		})
+	}
+}
+
+func testOOOMmapReplay(t *testing.T, scenario sampleTypeScenario) {
 	dir := t.TempDir()
 	wal, err := wlog.NewSize(nil, nil, filepath.Join(dir, "wal"), 32768, wlog.CompressionSnappy)
 	require.NoError(t, err)
@@ -4544,6 +4603,7 @@ func TestOOOMmapReplay(t *testing.T) {
 	opts.ChunkDirRoot = dir
 	opts.OutOfOrderCapMax.Store(30)
 	opts.OutOfOrderTimeWindow.Store(1000 * time.Minute.Milliseconds())
+	opts.EnableNativeHistograms.Store(true)
 
 	h, err := NewHead(nil, nil, wal, oooWlog, opts, nil)
 	require.NoError(t, err)
@@ -4552,8 +4612,7 @@ func TestOOOMmapReplay(t *testing.T) {
 	l := labels.FromStrings("foo", "bar")
 	appendSample := func(mins int64) {
 		app := h.Appender(context.Background())
-		ts, v := mins*time.Minute.Milliseconds(), float64(mins)
-		_, err := app.Append(0, l, ts, v)
+		_, err, _ := scenario.appendFunc(app, l, mins*time.Minute.Milliseconds(), mins)
 		require.NoError(t, err)
 		require.NoError(t, app.Commit())
 	}
@@ -4992,6 +5051,14 @@ func generateBigTestHistograms(numHistograms, numBuckets int) []*histogram.Histo
 }
 
 func TestOOOAppendWithNoSeries(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOOOAppendWithNoSeries(t, scenario.appendFunc)
+		})
+	}
+}
+
+func testOOOAppendWithNoSeries(t *testing.T, appendFunc func(appender storage.Appender, lbls labels.Labels, ts int64, value int64) (storage.SeriesRef, error, sample)) {
 	dir := t.TempDir()
 	wal, err := wlog.NewSize(nil, nil, filepath.Join(dir, "wal"), 32768, wlog.CompressionSnappy)
 	require.NoError(t, err)
@@ -5002,6 +5069,7 @@ func TestOOOAppendWithNoSeries(t *testing.T) {
 	opts.ChunkDirRoot = dir
 	opts.OutOfOrderCapMax.Store(30)
 	opts.OutOfOrderTimeWindow.Store(120 * time.Minute.Milliseconds())
+	opts.EnableNativeHistograms.Store(true)
 
 	h, err := NewHead(nil, nil, wal, oooWlog, opts, nil)
 	require.NoError(t, err)
@@ -5012,7 +5080,7 @@ func TestOOOAppendWithNoSeries(t *testing.T) {
 
 	appendSample := func(lbls labels.Labels, ts int64) {
 		app := h.Appender(context.Background())
-		_, err := app.Append(0, lbls, ts*time.Minute.Milliseconds(), float64(ts))
+		_, err, _ := appendFunc(app, lbls, ts*time.Minute.Milliseconds(), ts)
 		require.NoError(t, err)
 		require.NoError(t, app.Commit())
 	}
@@ -5060,7 +5128,7 @@ func TestOOOAppendWithNoSeries(t *testing.T) {
 	// Now 179m is too old.
 	s4 := newLabels(4)
 	app := h.Appender(context.Background())
-	_, err = app.Append(0, s4, 179*time.Minute.Milliseconds(), float64(179))
+	_, err, _ = appendFunc(app, s4, 179*time.Minute.Milliseconds(), 179)
 	require.Equal(t, storage.ErrTooOldSample, err)
 	require.NoError(t, app.Rollback())
 	verifyOOOSamples(s3, 1)
@@ -5073,6 +5141,14 @@ func TestOOOAppendWithNoSeries(t *testing.T) {
 }
 
 func TestHeadMinOOOTimeUpdate(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testHeadMinOOOTimeUpdate(t, scenario)
+		})
+	}
+}
+
+func testHeadMinOOOTimeUpdate(t *testing.T, scenario sampleTypeScenario) {
 	dir := t.TempDir()
 	wal, err := wlog.NewSize(nil, nil, filepath.Join(dir, "wal"), 32768, wlog.CompressionSnappy)
 	require.NoError(t, err)
@@ -5082,6 +5158,7 @@ func TestHeadMinOOOTimeUpdate(t *testing.T) {
 	opts := DefaultHeadOptions()
 	opts.ChunkDirRoot = dir
 	opts.OutOfOrderTimeWindow.Store(10 * time.Minute.Milliseconds())
+	opts.EnableNativeHistograms.Store(true)
 
 	h, err := NewHead(nil, nil, wal, oooWlog, opts, nil)
 	require.NoError(t, err)
@@ -5091,15 +5168,13 @@ func TestHeadMinOOOTimeUpdate(t *testing.T) {
 	require.NoError(t, h.Init(0))
 
 	appendSample := func(ts int64) {
-		lbls := labels.FromStrings("foo", "bar")
 		app := h.Appender(context.Background())
-		_, err := app.Append(0, lbls, ts*time.Minute.Milliseconds(), float64(ts))
+		_, err, _ = scenario.appendFunc(app, labels.FromStrings("a", "b"), ts*time.Minute.Milliseconds(), 99.0)
 		require.NoError(t, err)
 		require.NoError(t, app.Commit())
 	}
 
 	appendSample(300) // In-order sample.
-
 	require.Equal(t, int64(math.MaxInt64), h.MinOOOTime())
 
 	appendSample(295) // OOO sample.
@@ -5554,4 +5629,46 @@ func TestHeadDetectsDuplicateSampleAtSizeLimit(t *testing.T) {
 	}
 
 	require.Equal(t, numSamples/2, storedSampleCount)
+}
+
+type sampleTypeScenario struct {
+	sampleType string
+	appendFunc func(appender storage.Appender, lbls labels.Labels, ts int64, value int64) (storage.SeriesRef, error, sample)
+	sampleFunc func(ts, value int64) sample
+}
+
+var sampleTypeScenarios = map[string]sampleTypeScenario{
+	"float": {
+		sampleType: sampleMetricTypeFloat,
+		appendFunc: func(appender storage.Appender, lbls labels.Labels, ts int64, value int64) (storage.SeriesRef, error, sample) {
+			s := sample{t: ts, f: float64(value)}
+			ref, err := appender.Append(0, lbls, ts, s.f)
+			return ref, err, s
+		},
+		sampleFunc: func(ts, value int64) sample {
+			return sample{t: ts, f: float64(value)}
+		},
+	},
+	"integer histogram": {
+		sampleType: sampleMetricTypeHistogram,
+		appendFunc: func(appender storage.Appender, lbls labels.Labels, ts int64, value int64) (storage.SeriesRef, error, sample) {
+			s := sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(value))}
+			ref, err := appender.AppendHistogram(0, lbls, ts, s.h, nil)
+			return ref, err, s
+		},
+		sampleFunc: func(ts, value int64) sample {
+			return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(value))}
+		},
+	},
+	"float histogram": {
+		sampleType: sampleMetricTypeHistogram,
+		appendFunc: func(appender storage.Appender, lbls labels.Labels, ts int64, value int64) (storage.SeriesRef, error, sample) {
+			s := sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(value))}
+			ref, err := appender.AppendHistogram(0, lbls, ts, nil, s.fh)
+			return ref, err, s
+		},
+		sampleFunc: func(ts, value int64) sample {
+			return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(value))}
+		},
+	},
 }

@@ -15,10 +15,11 @@ package tsdb
 
 import (
 	"fmt"
+	"github.com/prometheus/prometheus/model/histogram"
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
@@ -26,6 +27,61 @@ import (
 )
 
 func TestBoundedChunk(t *testing.T) {
+	scenarios := map[string]struct {
+		inputChunk chunkenc.Chunk
+		valueType  chunkenc.ValueType
+		appendFunc func(app chunkenc.Appender, ts int64, val float64)
+		chunkFunc  func(numSamples int) chunkenc.Chunk
+		sampleFunc func(ts int64) sample
+	}{
+		"float": {
+			valueType: chunkenc.ValFloat,
+			appendFunc: func(app chunkenc.Appender, ts int64, val float64) {
+				app.Append(ts, val)
+			},
+			chunkFunc: newTestChunk,
+			sampleFunc: func(ts int64) sample {
+				return sample{t: ts, f: float64(ts)}
+			},
+		},
+		"integer histogram": {
+			valueType: chunkenc.ValHistogram,
+			appendFunc: func(app chunkenc.Appender, ts int64, val float64) {
+				h := tsdbutil.GenerateTestHistogram(int(val))
+				prevHApp, _ := app.(*chunkenc.HistogramAppender)
+				app.AppendHistogram(prevHApp, ts, h, false)
+			},
+			chunkFunc: newTestHistogramChunk,
+			sampleFunc: func(ts int64) sample {
+				return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(ts))}
+			},
+		},
+		"float histogram": {
+			valueType: chunkenc.ValFloatHistogram,
+			appendFunc: func(app chunkenc.Appender, ts int64, val float64) {
+				fh := tsdbutil.GenerateTestFloatHistogram(int(val))
+				prevHApp, _ := app.(*chunkenc.FloatHistogramAppender)
+				app.AppendFloatHistogram(prevHApp, ts, fh, false)
+			},
+			chunkFunc: newTestFloatHistogramChunk,
+			sampleFunc: func(ts int64) sample {
+				return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(ts))}
+			},
+		},
+	}
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			testBoundedChunk(t, scenario.valueType, scenario.appendFunc, scenario.chunkFunc, scenario.sampleFunc)
+		})
+	}
+}
+
+func testBoundedChunk(t *testing.T,
+	valueType chunkenc.ValueType,
+	appendFunc func(app chunkenc.Appender, ts int64, val float64),
+	chunkFunc func(numSamples int) chunkenc.Chunk,
+	sampleFunc func(ts int64) sample,
+) {
 	tests := []struct {
 		name           string
 		inputChunk     chunkenc.Chunk
@@ -37,90 +93,88 @@ func TestBoundedChunk(t *testing.T) {
 	}{
 		{
 			name:       "if there are no samples it returns nothing",
-			inputChunk: newTestChunk(0),
+			inputChunk: chunkFunc(0),
 			expSamples: nil,
 		},
 		{
 			name:       "bounds represent a single sample",
-			inputChunk: newTestChunk(10),
-			expSamples: []sample{
-				{0, 0, nil, nil},
-			},
+			inputChunk: chunkFunc(10),
+			expSamples: []sample{sampleFunc(0)},
 		},
 		{
 			name:       "if there are bounds set only samples within them are returned",
-			inputChunk: newTestChunk(10),
+			inputChunk: chunkFunc(10),
 			inputMinT:  1,
 			inputMaxT:  8,
 			expSamples: []sample{
-				{1, 1, nil, nil},
-				{2, 2, nil, nil},
-				{3, 3, nil, nil},
-				{4, 4, nil, nil},
-				{5, 5, nil, nil},
-				{6, 6, nil, nil},
-				{7, 7, nil, nil},
-				{8, 8, nil, nil},
+				sampleFunc(1),
+				sampleFunc(2),
+				sampleFunc(3),
+				sampleFunc(4),
+				sampleFunc(5),
+				sampleFunc(6),
+				sampleFunc(7),
+				sampleFunc(8),
 			},
 		},
 		{
 			name:       "if bounds set and only maxt is less than actual maxt",
-			inputChunk: newTestChunk(10),
+			inputChunk: chunkFunc(10),
 			inputMinT:  0,
 			inputMaxT:  5,
 			expSamples: []sample{
-				{0, 0, nil, nil},
-				{1, 1, nil, nil},
-				{2, 2, nil, nil},
-				{3, 3, nil, nil},
-				{4, 4, nil, nil},
-				{5, 5, nil, nil},
+				sampleFunc(0),
+				sampleFunc(1),
+				sampleFunc(2),
+				sampleFunc(3),
+				sampleFunc(4),
+				sampleFunc(5),
 			},
 		},
 		{
 			name:       "if bounds set and only mint is more than actual mint",
-			inputChunk: newTestChunk(10),
+			inputChunk: chunkFunc(10),
 			inputMinT:  5,
 			inputMaxT:  9,
 			expSamples: []sample{
-				{5, 5, nil, nil},
-				{6, 6, nil, nil},
-				{7, 7, nil, nil},
-				{8, 8, nil, nil},
-				{9, 9, nil, nil},
+				sampleFunc(5),
+				sampleFunc(6),
+				sampleFunc(7),
+				sampleFunc(8),
+				sampleFunc(9),
 			},
 		},
 		{
 			name:           "if there are bounds set with seek before mint",
-			inputChunk:     newTestChunk(10),
+			inputChunk:     chunkFunc(10),
 			inputMinT:      3,
 			inputMaxT:      7,
 			initialSeek:    1,
 			seekIsASuccess: true,
 			expSamples: []sample{
-				{3, 3, nil, nil},
-				{4, 4, nil, nil},
-				{5, 5, nil, nil},
-				{6, 6, nil, nil},
-				{7, 7, nil, nil},
+				sampleFunc(3),
+				sampleFunc(4),
+				sampleFunc(5),
+				sampleFunc(6),
+				sampleFunc(7),
 			},
 		},
 		{
 			name:           "if there are bounds set with seek between mint and maxt",
-			inputChunk:     newTestChunk(10),
+			inputChunk:     chunkFunc(10),
 			inputMinT:      3,
 			inputMaxT:      7,
 			initialSeek:    5,
 			seekIsASuccess: true,
 			expSamples: []sample{
-				{5, 5, nil, nil},
-				{6, 6, nil, nil},
-				{7, 7, nil, nil},
+				sampleFunc(5),
+				sampleFunc(6),
+				sampleFunc(7),
 			},
 		},
 		{
 			name:           "if there are bounds set with seek after maxt",
-			inputChunk:     newTestChunk(10),
+			inputChunk:     chunkFunc(10),
 			inputMinT:      3,
 			inputMaxT:      7,
 			initialSeek:    8,
@@ -132,12 +186,22 @@ func TestBoundedChunk(t *testing.T) {
 			chunk := boundedChunk{tc.inputChunk, tc.inputMinT, tc.inputMaxT}
 
 			// Testing Bytes()
-			expChunk := chunkenc.NewXORChunk()
+			var expChunk chunkenc.Chunk
+
+			switch tc.inputChunk.Encoding() {
+			case chunkenc.EncXOR:
+				expChunk = chunkenc.NewXORChunk()
+			case chunkenc.EncHistogram:
+				expChunk = chunkenc.NewHistogramChunk()
+			case chunkenc.EncFloatHistogram:
+				expChunk = chunkenc.NewFloatHistogramChunk()
+			}
+
 			if tc.inputChunk.NumSamples() > 0 {
 				app, err := expChunk.Appender()
 				require.NoError(t, err)
 				for ts := tc.inputMinT; ts <= tc.inputMaxT; ts++ {
-					app.Append(ts, float64(ts))
+					appendFunc(app, ts, float64(ts))
 				}
 			}
 			require.Equal(t, expChunk.Bytes(), chunk.Bytes())
@@ -148,17 +212,39 @@ func TestBoundedChunk(t *testing.T) {
 			if tc.initialSeek != 0 {
 				// Testing Seek()
 				val := it.Seek(tc.initialSeek)
-				require.Equal(t, tc.seekIsASuccess, val == chunkenc.ValFloat)
-				if val == chunkenc.ValFloat {
-					t, v := it.At()
-					samples = append(samples, sample{t, v, nil, nil})
+				require.Equal(t, tc.seekIsASuccess, val == valueType)
+				if val == valueType {
+					switch valueType {
+					case chunkenc.ValFloat:
+						t, v := it.At()
+						samples = append(samples, sample{t, v, nil, nil})
+					case chunkenc.ValHistogram:
+						t, v := it.AtHistogram()
+						v.CounterResetHint = histogram.UnknownCounterReset
+						samples = append(samples, sample{t, 0, v, nil})
+					case chunkenc.ValFloatHistogram:
+						t, v := it.AtFloatHistogram()
+						v.CounterResetHint = histogram.UnknownCounterReset
+						samples = append(samples, sample{t, 0, nil, v})
+					}
 				}
 			}
 
 			// Testing Next()
-			for it.Next() == chunkenc.ValFloat {
-				t, v := it.At()
-				samples = append(samples, sample{t, v, nil, nil})
+			for it.Next() == valueType {
+				switch valueType {
+				case chunkenc.ValFloat:
+					t, v := it.At()
+					samples = append(samples, sample{t, v, nil, nil})
+				case chunkenc.ValHistogram:
+					t, v := it.AtHistogram()
+					v.CounterResetHint = histogram.UnknownCounterReset
+					samples = append(samples, sample{t, 0, v, nil})
+				case chunkenc.ValFloatHistogram:
+					t, v := it.AtFloatHistogram()
+					v.CounterResetHint = histogram.UnknownCounterReset
+					samples = append(samples, sample{t, 0, nil, v})
+				}
 			}
 
 			// it.Next() should keep returning no  value.
@@ -178,6 +264,28 @@ func newTestChunk(numSamples int) chunkenc.Chunk {
 		a.Append(int64(i), float64(i))
 	}
 	return xor
+}
+
+func newTestHistogramChunk(numSamples int) chunkenc.Chunk {
+	xc := chunkenc.NewHistogramChunk()
+	a, _ := xc.Appender()
+	for i := 0; i < numSamples; i++ {
+		prevHApp, _ := a.(*chunkenc.HistogramAppender)
+		h := tsdbutil.GenerateTestHistogram(i)
+		a.AppendHistogram(prevHApp, int64(i), h, false)
+	}
+	return xc
+}
+
+func newTestFloatHistogramChunk(numSamples int) chunkenc.Chunk {
+	xc := chunkenc.NewFloatHistogramChunk()
+	a, _ := xc.Appender()
+	for i := 0; i < numSamples; i++ {
+		prevHApp, _ := a.(*chunkenc.FloatHistogramAppender)
+		fh := tsdbutil.GenerateTestFloatHistogram(i)
+		a.AppendFloatHistogram(prevHApp, int64(i), fh, false)
+	}
+	return xc
 }
 
 // TestMemSeries_chunk runs a series of tests on memSeries.chunk() calls.
