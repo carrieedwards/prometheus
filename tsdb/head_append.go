@@ -1041,8 +1041,10 @@ func (a *headAppender) Commit() (err error) {
 				if oooMmapMarkers == nil {
 					oooMmapMarkers = make(map[chunks.HeadSeriesRef][]chunks.ChunkDiskMapperRef)
 				}
-				oooMmapMarkers[series.ref] = mmapRefs
-				oooMmapMarkersCount += len(mmapRefs)
+				if len(mmapRefs) > 0 {
+					oooMmapMarkers[series.ref] = mmapRefs
+					oooMmapMarkersCount += len(mmapRefs)
+				}
 			}
 			if ok {
 				wblSamples = append(wblSamples, s)
@@ -1133,8 +1135,10 @@ func (a *headAppender) Commit() (err error) {
 				if oooMmapMarkers == nil {
 					oooMmapMarkers = make(map[chunks.HeadSeriesRef][]chunks.ChunkDiskMapperRef)
 				}
-				oooMmapMarkers[series.ref] = mmapRefs
-				oooMmapMarkersCount += len(mmapRefs)
+				if len(mmapRefs) > 0 {
+					oooMmapMarkers[series.ref] = mmapRefs
+					oooMmapMarkersCount += len(mmapRefs)
+				}
 			}
 			if ok {
 				wblHistograms = append(wblHistograms, s)
@@ -1599,7 +1603,7 @@ func (s *memSeries) cutNewHeadChunk(mint int64, e chunkenc.Encoding, chunkRange 
 // cutNewOOOHeadChunk cuts a new OOO chunk and m-maps the old chunk.
 // The caller must ensure that s.ooo is not nil.
 func (s *memSeries) cutNewOOOHeadChunk(mint int64, chunkDiskMapper *chunks.ChunkDiskMapper) (*oooHeadChunk, []chunks.ChunkDiskMapperRef) {
-	ref := s.mmapCurrentOOOHeadChunk(chunkDiskMapper)
+	refs := s.mmapCurrentOOOHeadChunk(chunkDiskMapper)
 
 	s.ooo.oooHeadChunk = &oooHeadChunk{
 		chunk:   NewOOOChunk(),
@@ -1607,20 +1611,21 @@ func (s *memSeries) cutNewOOOHeadChunk(mint int64, chunkDiskMapper *chunks.Chunk
 		maxTime: math.MinInt64,
 	}
 
-	return s.ooo.oooHeadChunk, ref
+	return s.ooo.oooHeadChunk, refs
 }
 
 func (s *memSeries) mmapCurrentOOOHeadChunk(chunkDiskMapper *chunks.ChunkDiskMapper) []chunks.ChunkDiskMapperRef {
 	switch {
 	case s.ooo == nil:
 		// OOO is not enabled.
-		return []chunks.ChunkDiskMapperRef{0}
+		return nil
 	case s.ooo.oooHeadChunk == nil:
 		// There is no head chunk, so nothing to m-map here.
-		return []chunks.ChunkDiskMapperRef{0}
+		return nil
 	case s.ooo.oooHeadChunk.chunk.samples[0].fh != nil:
 		// We have float histogram samples
 		// TODO(histograms): implement
+		s.ooo.oooHeadChunk = nil
 		return nil
 	case s.ooo.oooHeadChunk.chunk.samples[0].h != nil:
 		// We have histogram samples
@@ -1639,6 +1644,7 @@ func (s *memSeries) mmapCurrentOOOHeadChunk(chunkDiskMapper *chunks.ChunkDiskMap
 				maxTime:    maxTimes[i],
 			})
 		}
+		s.ooo.oooHeadChunk = nil
 		return chunkRefs
 	default:
 		//  Float samples
