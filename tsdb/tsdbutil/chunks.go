@@ -157,3 +157,39 @@ func generateSamples(start, numSamples int, gen func(int) Sample) []Sample {
 	}
 	return samples
 }
+
+func GetBytes(encoding chunkenc.Encoding, it chunkenc.Iterator) []byte {
+	var xc chunkenc.Chunk
+
+	switch encoding {
+	case chunkenc.EncXOR:
+		xc = chunkenc.NewXORChunk()
+	case chunkenc.EncHistogram:
+		xc = chunkenc.NewHistogramChunk()
+	case chunkenc.EncFloatHistogram:
+		xc = chunkenc.NewFloatHistogramChunk()
+	}
+	app, err := xc.Appender()
+	if err != nil {
+		panic(err)
+	}
+
+	for typ := it.Next(); typ != chunkenc.ValNone; typ = it.Next() {
+		switch typ {
+		case chunkenc.ValFloat:
+			t, v := it.At()
+			app.Append(t, v)
+		case chunkenc.ValHistogram:
+			prevHApp, _ := app.(*chunkenc.HistogramAppender)
+			t, v := it.AtHistogram()
+			// TODO(carrieedwards): check if logic for new chunk allocation is needed (see ToEncodedChunks method)
+			app.AppendHistogram(prevHApp, t, v, false)
+		case chunkenc.ValFloatHistogram:
+			prevHApp, _ := app.(*chunkenc.FloatHistogramAppender)
+			t, v := it.AtFloatHistogram()
+			// TODO(carrieedwards): check if logic for new chunk allocation is needed (see ToEncodedChunks method)
+			app.AppendFloatHistogram(prevHApp, t, v, false)
+		}
+	}
+	return xc.Bytes()
+}
