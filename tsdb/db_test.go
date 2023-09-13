@@ -6760,10 +6760,19 @@ func TestWblReplayAfterOOODisableAndRestart(t *testing.T) {
 }
 
 func TestPanicOnApplyConfig(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testPanicOnApplyConfig(t, scenario)
+		})
+	}
+}
+
+func testPanicOnApplyConfig(t *testing.T, scenario sampleTypeScenario) {
 	dir := t.TempDir()
 
 	opts := DefaultOptions()
 	opts.OutOfOrderTimeWindow = 60 * time.Minute.Milliseconds()
+	opts.EnableNativeHistograms = true
 
 	db, err := Open(dir, nil, nil, opts, nil)
 	require.NoError(t, err)
@@ -6778,9 +6787,9 @@ func TestPanicOnApplyConfig(t *testing.T) {
 		app := db.Appender(context.Background())
 		for min := fromMins; min <= toMins; min++ {
 			ts := min * time.Minute.Milliseconds()
-			_, err := app.Append(0, series1, ts, float64(ts))
+			_, err, s := scenario.appendFunc(app, series1, ts, ts)
 			require.NoError(t, err)
-			allSamples = append(allSamples, sample{t: ts, f: float64(ts)})
+			allSamples = append(allSamples, s)
 		}
 		require.NoError(t, app.Commit())
 	}
