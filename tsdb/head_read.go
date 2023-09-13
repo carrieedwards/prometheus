@@ -15,6 +15,7 @@ package tsdb
 
 import (
 	"context"
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 	"math"
 	"sync"
 
@@ -493,7 +494,7 @@ func (s *memSeries) oooMergedChunk(meta chunks.Meta, cdm *chunks.ChunkDiskMapper
 	// those that overlap and stop when we know the rest don't.
 	slices.SortFunc(tmpChks, refLessByMinTimeAndMinRef)
 
-	mc := &mergedOOOChunks{}
+	mc := &mergedOOOChunks{encoding: chunkenc.EncXOR}
 	absoluteMax := int64(math.MinInt64)
 	for _, c := range tmpChks {
 		if c.meta.Ref != meta.Ref && (len(mc.chunks) == 0 || c.meta.MinTime > absoluteMax) {
@@ -530,6 +531,7 @@ func (s *memSeries) oooMergedChunk(meta chunks.Meta, cdm *chunks.ChunkDiskMapper
 			} else {
 				c.meta.Chunk = chk
 			}
+			mc.encoding = c.meta.Chunk.Encoding() // Update the oooMergedChunk encoding depending on the chunk's encoding type
 			mc.chunks = append(mc.chunks, c.meta)
 		}
 		if c.meta.MaxTime > absoluteMax {
@@ -545,28 +547,20 @@ var _ chunkenc.Chunk = &mergedOOOChunks{}
 // mergedOOOChunks holds the list of overlapping chunks. This struct satisfies
 // chunkenc.Chunk.
 type mergedOOOChunks struct {
-	chunks []chunks.Meta
+	chunks   []chunks.Meta
+	encoding chunkenc.Encoding
 }
 
 // Bytes is a very expensive method because its calling the iterator of all the
 // chunks in the mergedOOOChunk and building a new chunk with the samples.
 func (o mergedOOOChunks) Bytes() []byte {
-	xc := chunkenc.NewXORChunk()
-	app, err := xc.Appender()
-	if err != nil {
-		panic(err)
-	}
 	it := o.Iterator(nil)
-	for it.Next() == chunkenc.ValFloat {
-		t, v := it.At()
-		app.Append(t, v)
-	}
-
-	return xc.Bytes()
+	return tsdbutil.GetBytes(o.Encoding(), it)
 }
 
 func (o mergedOOOChunks) Encoding() chunkenc.Encoding {
-	return chunkenc.EncXOR
+	// TODO(carrieedwards) Handle cases where chunks have different encoding types due to samples being of different types
+	return o.encoding
 }
 
 func (o mergedOOOChunks) Appender() (chunkenc.Appender, error) {
@@ -599,14 +593,8 @@ type boundedChunk struct {
 }
 
 func (b boundedChunk) Bytes() []byte {
-	xor := chunkenc.NewXORChunk()
-	a, _ := xor.Appender()
 	it := b.Iterator(nil)
-	for it.Next() == chunkenc.ValFloat {
-		t, v := it.At()
-		a.Append(t, v)
-	}
-	return xor.Bytes()
+	return tsdbutil.GetBytes(b.Encoding(), it)
 }
 
 func (b boundedChunk) Iterator(iterator chunkenc.Iterator) chunkenc.Iterator {
@@ -632,15 +620,15 @@ type boundedIterator struct {
 // If there are samples within bounds it will advance one by one amongst them.
 // If there are no samples within bounds it will return false.
 func (b boundedIterator) Next() chunkenc.ValueType {
-	for b.Iterator.Next() == chunkenc.ValFloat {
-		t, _ := b.Iterator.At()
+	for typ := b.Iterator.Next(); typ != chunkenc.ValNone; typ = b.Iterator.Next() {
+		t := b.Iterator.AtT()
 		switch {
 		case t < b.minT:
 			continue
 		case t > b.maxT:
 			return chunkenc.ValNone
 		default:
-			return chunkenc.ValFloat
+			return typ
 		}
 	}
 	return chunkenc.ValNone
@@ -649,13 +637,13 @@ func (b boundedIterator) Next() chunkenc.ValueType {
 func (b boundedIterator) Seek(t int64) chunkenc.ValueType {
 	if t < b.minT {
 		// We must seek at least up to b.minT if it is asked for something before that.
-		val := b.Iterator.Seek(b.minT)
-		if !(val == chunkenc.ValFloat) {
+		valType := b.Iterator.Seek(b.minT)
+		if valType == chunkenc.ValNone {
 			return chunkenc.ValNone
 		}
-		t, _ := b.Iterator.At()
+		t := b.Iterator.AtT()
 		if t <= b.maxT {
-			return chunkenc.ValFloat
+			return valType
 		}
 	}
 	if t > b.maxT {
