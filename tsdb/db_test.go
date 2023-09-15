@@ -4324,13 +4324,13 @@ func TestMetadataAssertInMemoryData(t *testing.T) {
 func TestOOOCompaction(t *testing.T) {
 	scenarios := map[string]struct {
 		appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error)
-		sampleFunc func(ts int64, val float64) tsdbutil.Sample
+		sampleFunc func(ts int64, val float64) chunks.Sample
 	}{
 		"float": {
 			appendFunc: func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error) {
 				return app.Append(0, lbls, ts, val)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, f: val}
 			},
 		},
@@ -4342,7 +4342,7 @@ func TestOOOCompaction(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, h, nil)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(val))}
 			},
 		},
@@ -4354,7 +4354,7 @@ func TestOOOCompaction(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, nil, fh)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(val))}
 			},
 		},
@@ -4368,7 +4368,7 @@ func TestOOOCompaction(t *testing.T) {
 
 func testOOOcompaction(t *testing.T,
 	appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error),
-	sampleFunc func(ts int64, val float64) tsdbutil.Sample,
+	sampleFunc func(ts int64, val float64) chunks.Sample,
 ) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -4439,10 +4439,10 @@ func testOOOcompaction(t *testing.T,
 
 		q, err := db.Querier(math.MinInt64, math.MaxInt64)
 		require.NoError(t, err)
-		gotSamples := make(map[string][]tsdbutil.Sample)
+		gotSamples := make(map[string][]chunks.Sample)
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
 		for k, v := range actRes {
-			var samples []tsdbutil.Sample
+			var samples []chunks.Sample
 			for _, sample := range v {
 				switch sample.Type() {
 				case chunkenc.ValFloat:
@@ -4524,9 +4524,9 @@ func testOOOcompaction(t *testing.T,
 		require.NoError(t, err)
 
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
-		gotSamples := make(map[string][]tsdbutil.Sample)
+		gotSamples := make(map[string][]chunks.Sample)
 		for k, v := range actRes {
-			var samples []tsdbutil.Sample
+			var samples []chunks.Sample
 			for _, sample := range v {
 				switch sample.Type() {
 				case chunkenc.ValFloat:
@@ -4588,13 +4588,13 @@ func testOOOcompaction(t *testing.T,
 func TestOOOCompactionWithNormalCompaction(t *testing.T) {
 	scenarios := map[string]struct {
 		appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error)
-		sampleFunc func(ts int64, val float64) tsdbutil.Sample
+		sampleFunc func(ts int64, val float64) chunks.Sample
 	}{
 		"float": {
 			appendFunc: func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error) {
 				return app.Append(0, lbls, ts, val)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, f: val}
 			},
 		},
@@ -4606,7 +4606,7 @@ func TestOOOCompactionWithNormalCompaction(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, h, nil)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(val))}
 			},
 		},
@@ -4618,7 +4618,7 @@ func TestOOOCompactionWithNormalCompaction(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, nil, fh)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(val))}
 			},
 		},
@@ -4632,7 +4632,7 @@ func TestOOOCompactionWithNormalCompaction(t *testing.T) {
 
 func testOOOCompactionWithNormalCompaction(t *testing.T,
 	appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error),
-	sampleFunc func(ts int64, val float64) tsdbutil.Sample,
+	sampleFunc func(ts int64, val float64) chunks.Sample,
 ) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -4737,13 +4737,13 @@ func testOOOCompactionWithNormalCompaction(t *testing.T,
 func TestOOOCompactionWithDisabledWriteLog(t *testing.T) {
 	scenarios := map[string]struct {
 		appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error)
-		sampleFunc func(ts int64, val float64) tsdbutil.Sample
+		sampleFunc func(ts int64, val float64) chunks.Sample
 	}{
 		"float": {
 			appendFunc: func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error) {
 				return app.Append(0, lbls, ts, val)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, f: val}
 			},
 		},
@@ -4755,7 +4755,7 @@ func TestOOOCompactionWithDisabledWriteLog(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, h, nil)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(val))}
 			},
 		},
@@ -4767,7 +4767,7 @@ func TestOOOCompactionWithDisabledWriteLog(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, nil, fh)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(val))}
 			},
 		},
@@ -4781,7 +4781,7 @@ func TestOOOCompactionWithDisabledWriteLog(t *testing.T) {
 
 func testOOOCompactionWithDisabledWriteLog(t *testing.T,
 	appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error),
-	sampleFunc func(ts int64, val float64) tsdbutil.Sample,
+	sampleFunc func(ts int64, val float64) chunks.Sample,
 ) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -4874,9 +4874,9 @@ func testOOOCompactionWithDisabledWriteLog(t *testing.T,
 		require.NoError(t, err)
 
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
-		gotSamples := make(map[string][]tsdbutil.Sample)
+		gotSamples := make(map[string][]chunks.Sample)
 		for k, v := range actRes {
-			var samples []tsdbutil.Sample
+			var samples []chunks.Sample
 			for _, sample := range v {
 				switch sample.Type() {
 				case chunkenc.ValFloat:
@@ -5892,13 +5892,13 @@ func TestWBLAndMmapReplay(t *testing.T) {
 func TestOOOCompactionFailure(t *testing.T) {
 	scenarios := map[string]struct {
 		appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error)
-		sampleFunc func(ts int64, val float64) tsdbutil.Sample
+		sampleFunc func(ts int64, val float64) chunks.Sample
 	}{
 		"float": {
 			appendFunc: func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error) {
 				return app.Append(0, lbls, ts, val)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, f: val}
 			},
 		},
@@ -5910,7 +5910,7 @@ func TestOOOCompactionFailure(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, h, nil)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, h: tsdbutil.GenerateTestHistogram(int(val))}
 			},
 		},
@@ -5922,7 +5922,7 @@ func TestOOOCompactionFailure(t *testing.T) {
 				}
 				return app.AppendHistogram(0, lbls, ts, nil, fh)
 			},
-			sampleFunc: func(ts int64, val float64) tsdbutil.Sample {
+			sampleFunc: func(ts int64, val float64) chunks.Sample {
 				return sample{t: ts, fh: tsdbutil.GenerateTestFloatHistogram(int(val))}
 			},
 		},
@@ -5936,7 +5936,7 @@ func TestOOOCompactionFailure(t *testing.T) {
 
 func testOOOCompactionFailure(t *testing.T,
 	appendFunc func(app storage.Appender, lbls labels.Labels, ts int64, val float64, counterReset bool) (storage.SeriesRef, error),
-	sampleFunc func(ts int64, val float64) tsdbutil.Sample,
+	sampleFunc func(ts int64, val float64) chunks.Sample,
 ) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -6055,10 +6055,10 @@ func testOOOCompactionFailure(t *testing.T,
 
 		q, err := NewBlockQuerier(block, math.MinInt64, math.MaxInt64)
 		require.NoError(t, err)
-		gotSamples := make(map[string][]tsdbutil.Sample)
+		gotSamples := make(map[string][]chunks.Sample)
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
 		for k, v := range actRes {
-			var samples []tsdbutil.Sample
+			var samples []chunks.Sample
 			for _, sample := range v {
 				switch sample.Type() {
 				case chunkenc.ValFloat:
@@ -6363,6 +6363,14 @@ func TestOOOMmapCorruption(t *testing.T) {
 }
 
 func TestOutOfOrderRuntimeConfig(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOutOfOrderRuntimeConfig(t, scenario)
+		})
+	}
+}
+
+func testOutOfOrderRuntimeConfig(t *testing.T, scenario sampleTypeScenario) {
 	ctx := context.Background()
 
 	getDB := func(oooTimeWindow int64) *DB {
@@ -6370,6 +6378,7 @@ func TestOutOfOrderRuntimeConfig(t *testing.T) {
 
 		opts := DefaultOptions()
 		opts.OutOfOrderTimeWindow = oooTimeWindow
+		opts.EnableNativeHistograms = true
 
 		db, err := Open(dir, nil, nil, opts, nil)
 		require.NoError(t, err)
@@ -6396,10 +6405,10 @@ func TestOutOfOrderRuntimeConfig(t *testing.T) {
 		app := db.Appender(context.Background())
 		for min := fromMins; min <= toMins; min++ {
 			ts := min * time.Minute.Milliseconds()
-			_, err := app.Append(0, series1, ts, float64(ts))
+			_, err, s := scenario.appendFunc(app, series1, ts, ts)
 			if success {
 				require.NoError(t, err)
-				allSamples = append(allSamples, sample{t: ts, f: float64(ts)})
+				allSamples = append(allSamples, s)
 			} else {
 				require.Error(t, err)
 			}
@@ -6421,7 +6430,7 @@ func TestOutOfOrderRuntimeConfig(t *testing.T) {
 		require.NoError(t, err)
 
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
-		require.Equal(t, expRes, actRes)
+		requireEqualSamples(t, expRes, actRes)
 	}
 
 	doOOOCompaction := func(t *testing.T, db *DB) {
@@ -7519,7 +7528,7 @@ Outer:
 
 // requireEqualSamples checks that the actual series are equal to the expected ones. It ignores the counter reset hints for histograms.
 // TODO(fionaliao): understand counter reset behaviour, might want to unignore hints later
-func requireEqualSamples(t *testing.T, expected, actual map[string][]tsdbutil.Sample) {
+func requireEqualSamples(t *testing.T, expected, actual map[string][]chunks.Sample) {
 	for name, expectedItem := range expected {
 		actualItem, ok := actual[name]
 		require.True(t, ok, "Expected series %s not found", name)
