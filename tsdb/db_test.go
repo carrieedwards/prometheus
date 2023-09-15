@@ -6352,11 +6352,20 @@ func TestOOOMmapCorruption(t *testing.T) {
 }
 
 func TestOutOfOrderRuntimeConfig(t *testing.T) {
+	for name, scenario := range sampleTypeScenarios {
+		t.Run(name, func(t *testing.T) {
+			testOutOfOrderRuntimeConfig(t, scenario)
+		})
+	}
+}
+
+func testOutOfOrderRuntimeConfig(t *testing.T, scenario sampleTypeScenario) {
 	getDB := func(oooTimeWindow int64) *DB {
 		dir := t.TempDir()
 
 		opts := DefaultOptions()
 		opts.OutOfOrderTimeWindow = oooTimeWindow
+		opts.EnableNativeHistograms = true
 
 		db, err := Open(dir, nil, nil, opts, nil)
 		require.NoError(t, err)
@@ -6383,10 +6392,10 @@ func TestOutOfOrderRuntimeConfig(t *testing.T) {
 		app := db.Appender(context.Background())
 		for min := fromMins; min <= toMins; min++ {
 			ts := min * time.Minute.Milliseconds()
-			_, err := app.Append(0, series1, ts, float64(ts))
+			_, err, s := scenario.appendFunc(app, series1, ts, ts)
 			if success {
 				require.NoError(t, err)
-				allSamples = append(allSamples, sample{t: ts, f: float64(ts)})
+				allSamples = append(allSamples, s)
 			} else {
 				require.Error(t, err)
 			}
@@ -6408,7 +6417,7 @@ func TestOutOfOrderRuntimeConfig(t *testing.T) {
 		require.NoError(t, err)
 
 		actRes := query(t, q, labels.MustNewMatcher(labels.MatchRegexp, "foo", "bar.*"))
-		require.Equal(t, expRes, actRes)
+		requireEqualSamples(t, expRes, actRes)
 	}
 
 	doOOOCompaction := func(t *testing.T, db *DB) {
