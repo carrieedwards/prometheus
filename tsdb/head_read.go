@@ -15,9 +15,10 @@ package tsdb
 
 import (
 	"context"
-	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 	"math"
 	"sync"
+
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 
 	"github.com/go-kit/log/level"
 	"github.com/pkg/errors"
